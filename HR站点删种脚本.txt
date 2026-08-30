@@ -1,0 +1,97 @@
+(maindata, torrent) => {
+    // 站点规则配置表，再这个脚本种可以直接扩展其他HR站点
+	// trackerMatch字段用于匹配域名也就是匹配规则，其实稳妥的话我觉得还是分类稳妥，但这里我用你现有的脚本改的
+	// seedHours 设置一个hr时间最好是大一些，时间字段获取有概率不稳，我看了一下qb的api其实没有做种时间这个字段只有完成时间，不知道他那个怎么解释写的是下载完成时间，我这里做了一个计算添加时间假设是0秒，完成时间10秒，我的hr假设是20秒，那我只需要判断当前种子进度>1并且当前时间xx秒减去添加时间>完成时间+hr时间
+	// ratio分享率需求，当配置为0表示分享率删种规则不启用直接跳过，当达到ratio要求执行删除
+	// keepTags保种标签如果是手动添加的大包超过xxh我记得是有不计算倍率的例如皇后啥的可以不删一直吃上传
+    const RULES = [
+        {
+            name: "BTSchool",
+            trackerMatch: /btschool\.club/i,
+            seedHours: 21,
+            ratio: 1.05,
+            keepTags: ["keep", "KEEP"]
+        },
+        {
+            name: "CarPT",
+            trackerMatch: /carpt\.net/i,
+            seedHours: 25,
+            ratio: 10.3,
+            keepTags: ["keep", "KEEP"]
+        },
+        {
+            name: "OpenCD",
+            trackerMatch: /open\.cd/i,
+            seedHours: 37,
+            ratio: 0,
+            keepTags: ["keep", "KEEP"]
+        }
+    ];
+
+    const SAFE_FLOOR_S = 3600; // 最低1小时防止未上报
+
+    if (!torrent) return false;
+
+    const { state, progress, completedTime, addedTime,
+            category, tags, tracker, uploaded, downloaded, size } = torrent;
+
+    // 仅做种状态进入判断
+    const allowedStates = ["uploading", "stalledup", "pausedup", "queuedup", "forcedup"];
+    if (allowedStates.indexOf(state) === -1) return false;
+
+    // 必须是完成态
+    if (!isFinite(progress) || progress < 1.0) return false;
+
+    // 时间字段有效性
+    if (!isFinite(completedTime) || completedTime <= 0) return false;
+    if (!isFinite(addedTime) || addedTime <= 0) return false;
+    if (completedTime < addedTime) return false;
+
+    const now = moment().unix();
+
+    // 完成后经过的时间
+    const elapsed = now - completedTime;
+    if (elapsed < SAFE_FLOOR_S) return false;
+
+    // KEEP 标签保护（大小写无关）
+    const catLower = String(category || "").toLowerCase();
+    const tagLower = String(tags || "").toLowerCase();
+
+    // =====================
+    // 匹配站点规则
+    // =====================
+    const trackerStr = String(tracker || "").toLowerCase();
+    let rule = null;
+
+    for (const r of RULES) {
+        const isKept = r.keepTags.some(k =>
+            catLower.includes(k.toLowerCase()) ||
+            tagLower.includes(k.toLowerCase())
+        );
+        if (isKept) return false;
+
+        if (r.trackerMatch.test(trackerStr)) {
+            rule = r;
+            break;
+        }
+    }
+
+    if (!rule) return false;
+
+    // 删除判定
+    const requiredSeconds = rule.seedHours * 3600;
+
+    // 路径1: 时间达标 (now - completedTime >= HR要求)
+    if (elapsed >= requiredSeconds) return true;
+
+    // 路径2: 分享率达标提前删除
+    if (rule.ratio > 0) {
+        const up = Number(uploaded) || 0;
+        const dl = Number(downloaded) || 0;
+        const sz = Number(size) || 0;
+        const base = Math.max(sz, dl);
+        if (base > 0 && up >= base * rule.ratio) return true;
+    }
+
+    return false;
+};
